@@ -29,9 +29,12 @@
 #ifndef TOPIC_TO_IMAGE_H
 #define TOPIC_TO_IMAGE_H
 
+#include <atomic>
 #include <memory>
 #include <filesystem>
+#include <mutex>
 #include <opencv2/opencv.hpp>
+#include <thread>
 #include "rclcpp/rclcpp.hpp"
 #if __has_include("cv_bridge/cv_bridge.hpp") // ROS 2 jazzy and newer
 #include "cv_bridge/cv_bridge.hpp"
@@ -46,13 +49,22 @@ class TopicToImage : public rclcpp::Node
 {
 public:
   explicit TopicToImage(const rclcpp::NodeOptions & options);
+  ~TopicToImage() override;
 
 private:
   void ImageCallback(const sensor_msgs::msg::Image::ConstSharedPtr & image_msg);
+  void KeyboardLoop();
+  void SaveLatestImage();
+  void SaveImage(const sensor_msgs::msg::Image::ConstSharedPtr & image_msg);
 
   image_transport::Subscriber image_sub_;
 
   std::string output_path_, file_prefix_, input_topic_;
+  std::mutex latest_image_mutex_;
+  sensor_msgs::msg::Image::ConstSharedPtr latest_image_;
+  std::thread keyboard_thread_;
+  std::atomic_bool keyboard_thread_running_{false};
+  int keyboard_fd_{-1};
 };
 
 #endif //TOPIC_TO_IMAGE_H

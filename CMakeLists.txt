@@ -10,6 +10,7 @@ ament_auto_find_build_dependencies()
 
 find_package (OpenCV REQUIRED)
 find_package (Boost REQUIRED)
+find_package (Threads REQUIRED)
 
 # topic_to_image
 ament_auto_add_library(topic_to_image SHARED
@@ -17,6 +18,7 @@ ament_auto_add_library(topic_to_image SHARED
         )
 
 target_link_libraries(topic_to_image ${PCL_LIBRARIES}
+        Threads::Threads
         )
 
 target_include_directories(topic_to_image
@@ -51,4 +53,3 @@ rclcpp_components_register_node(bag_to_image
 ament_auto_package(INSTALL_TO_SHARE
         launch
         )
-

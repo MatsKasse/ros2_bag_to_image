@@ -28,6 +28,11 @@
 
 #include "topic_to_image/topic_to_image.hpp"
 
+#include <fcntl.h>
+#include <sys/select.h>
+#include <termios.h>
+#include <unistd.h>
+
 TopicToImage::TopicToImage(const rclcpp::NodeOptions & options) :
   Node("topic_to_image", options)
 {
@@ -62,10 +67,111 @@ TopicToImage::TopicToImage(const rclcpp::NodeOptions & options) :
       rclcpp::shutdown(nullptr, "Missing Permissions on the output path");
     }
   }
+  keyboard_thread_running_ = true;
+  keyboard_thread_ = std::thread(&TopicToImage::KeyboardLoop, this);
+
   RCLCPP_INFO_STREAM(get_logger(), "Saving Images PNGs to:" << output_path_ << ",  with prefix:" << file_prefix_);
+  RCLCPP_INFO_STREAM(get_logger(), "Press 's' in this terminal to save the latest received image.");
+}
+
+TopicToImage::~TopicToImage()
+{
+  keyboard_thread_running_ = false;
+  if (keyboard_thread_.joinable()) {
+    keyboard_thread_.join();
+  }
 }
 
 void TopicToImage::ImageCallback(const sensor_msgs::msg::Image::ConstSharedPtr & image_msg)
+{
+  std::lock_guard<std::mutex> lock(latest_image_mutex_);
+  latest_image_ = image_msg;
+}
+
+void TopicToImage::KeyboardLoop()
+{
+  keyboard_fd_ = open("/dev/tty", O_RDONLY | O_NONBLOCK);
+  if (keyboard_fd_ < 0) {
+    keyboard_fd_ = STDIN_FILENO;
+  }
+
+  if (!isatty(keyboard_fd_)) {
+    RCLCPP_WARN_STREAM(get_logger(), "No interactive terminal available. Press-to-save keyboard input is disabled.");
+    if (keyboard_fd_ != STDIN_FILENO) {
+      close(keyboard_fd_);
+    }
+    keyboard_fd_ = -1;
+    return;
+  }
+
+  termios original_terminal_settings;
+  if (tcgetattr(keyboard_fd_, &original_terminal_settings) != 0) {
+    RCLCPP_WARN_STREAM(get_logger(), "Could not read terminal settings. Press-to-save keyboard input is disabled.");
+    if (keyboard_fd_ != STDIN_FILENO) {
+      close(keyboard_fd_);
+    }
+    keyboard_fd_ = -1;
+    return;
+  }
+
+  termios raw_terminal_settings = original_terminal_settings;
+  raw_terminal_settings.c_lflag &= static_cast<tcflag_t>(~(ICANON | ECHO));
+  raw_terminal_settings.c_cc[VMIN] = 0;
+  raw_terminal_settings.c_cc[VTIME] = 0;
+
+  if (tcsetattr(keyboard_fd_, TCSANOW, &raw_terminal_settings) != 0) {
+    RCLCPP_WARN_STREAM(get_logger(), "Could not configure terminal input. Press-to-save keyboard input is disabled.");
+    if (keyboard_fd_ != STDIN_FILENO) {
+      close(keyboard_fd_);
+    }
+    keyboard_fd_ = -1;
+    return;
+  }
+
+  while (keyboard_thread_running_ && rclcpp::ok()) {
+    fd_set read_fds;
+    FD_ZERO(&read_fds);
+    FD_SET(keyboard_fd_, &read_fds);
+
+    timeval timeout;
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 100000;
+
+    const int ready = select(keyboard_fd_ + 1, &read_fds, nullptr, nullptr, &timeout);
+    if (ready <= 0 || !FD_ISSET(keyboard_fd_, &read_fds)) {
+      continue;
+    }
+
+    char key;
+    if (read(keyboard_fd_, &key, 1) == 1 && (key == 's' || key == 'S')) {
+      SaveLatestImage();
+    }
+  }
+
+  tcsetattr(keyboard_fd_, TCSANOW, &original_terminal_settings);
+  if (keyboard_fd_ != STDIN_FILENO) {
+    close(keyboard_fd_);
+  }
+  keyboard_fd_ = -1;
+}
+
+void TopicToImage::SaveLatestImage()
+{
+  sensor_msgs::msg::Image::ConstSharedPtr image_msg;
+  {
+    std::lock_guard<std::mutex> lock(latest_image_mutex_);
+    image_msg = latest_image_;
+  }
+
+  if (!image_msg) {
+    RCLCPP_WARN_STREAM(get_logger(), "No image received yet. Nothing saved.");
+    return;
+  }
+
+  SaveImage(image_msg);
+}
+
+void TopicToImage::SaveImage(const sensor_msgs::msg::Image::ConstSharedPtr & image_msg)
 {
   std::string fname;
   fname = output_path_ + "/" + file_prefix_ + "_" +
@@ -94,5 +200,3 @@ void TopicToImage::ImageCallback(const sensor_msgs::msg::Image::ConstSharedPtr &
 
 #include <rclcpp_components/register_node_macro.hpp>
 RCLCPP_COMPONENTS_REGISTER_NODE(TopicToImage)
-
-
